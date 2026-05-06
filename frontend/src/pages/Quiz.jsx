@@ -71,13 +71,8 @@ export default function Quiz() {
     }
 
     if (nextIdx >= questions.length) {
-      // Done — for dispatchers go to voice sim, for technicians go straight to results
       sessionStorage.setItem("quizAnswers", JSON.stringify(newAnswers));
-      if (isDispatcher) {
-        navigate("/voice-sim");
-      } else {
-        navigate("/results");
-      }
+      navigate("/challenges");
     } else {
       setCurrentIdx(nextIdx);
     }

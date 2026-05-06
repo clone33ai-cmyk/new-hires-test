@@ -28,6 +28,7 @@ export default function Results() {
   const [quizEval, setQuizEval] = useState(null);
   const [voiceEval, setVoiceEval] = useState(null);
   const [quizAnswers, setQuizAnswers] = useState([]);
+  const [challengeScores, setChallengeScores] = useState([]);
 
   const name = sessionStorage.getItem("evalName") || "Candidate";
   const role = sessionStorage.getItem("evalRole") || "dispatcher";
@@ -36,8 +37,10 @@ export default function Results() {
   useEffect(() => {
     const answers = JSON.parse(sessionStorage.getItem("quizAnswers") || "[]");
     const voice = JSON.parse(sessionStorage.getItem("voiceEval") || "null");
+    const challenges = JSON.parse(sessionStorage.getItem("challengeScores") || "[]");
     setQuizAnswers(answers);
     setVoiceEval(voice);
+    setChallengeScores(challenges);
 
     // Compute quiz results locally
     if (answers.length > 0) {
@@ -69,8 +72,15 @@ export default function Results() {
   // Combined score
   const quizScore = quizEval?.percentage || 0;
   const voiceScore = voiceEval?.totalScore || null;
-  const combinedScore = voiceScore !== null
-    ? Math.round(quizScore * 0.6 + voiceScore * 0.4)
+  // Combined score: quiz 50%, challenges 30%, voice 20%
+  const challengeAvg = challengeScores.length > 0
+    ? Math.round(challengeScores.reduce((s, c) => s + c.score, 0) / challengeScores.length)
+    : null;
+
+  const combinedScore = voiceScore !== null && challengeAvg !== null
+    ? Math.round(quizScore * 0.5 + challengeAvg * 0.3 + voiceScore * 0.2)
+    : challengeAvg !== null
+    ? Math.round(quizScore * 0.6 + challengeAvg * 0.4)
     : quizScore;
 
   const recommendation = combinedScore >= 85 ? "STRONG HIRE" : combinedScore >= 65 ? "CONSIDER" : "NOT RECOMMENDED";
@@ -121,7 +131,7 @@ export default function Results() {
         </div>
 
         {/* Score breakdown */}
-        <div style={{ display: "grid", gridTemplateColumns: voiceScore !== null ? "1fr 1fr" : "1fr", gap: "1rem", marginBottom: "1rem" }}>
+        <div style={{ display: "grid", gridTemplateColumns: `repeat(${[true, challengeAvg !== null, voiceScore !== null].filter(Boolean).length}, 1fr)`, gap: "1rem", marginBottom: "1rem" }}>
           <div className="card">
             <div style={{ padding: "1rem 1.5rem" }}>
               <div className="section-label" style={{ marginBottom: 8 }}>Knowledge Quiz</div>
@@ -134,6 +144,21 @@ export default function Results() {
               </div>
             </div>
           </div>
+
+          {challengeAvg !== null && (
+            <div className="card">
+              <div style={{ padding: "1rem 1.5rem" }}>
+                <div className="section-label" style={{ marginBottom: 8 }}>Interactive Challenges</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <ScoreRing score={challengeAvg} size={72} />
+                  <div>
+                    <div style={{ fontWeight: 700, fontSize: 15 }}>{challengeScores.length} challenges</div>
+                    <div style={{ fontSize: 13, color: "var(--gray-500)" }}>{voiceScore !== null ? "30%" : "40%"} of total score</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
 
           {voiceScore !== null && (
             <div className="card">
