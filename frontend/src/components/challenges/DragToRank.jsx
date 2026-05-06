@@ -2,7 +2,7 @@ import { useState, useRef } from "react";
 
 export default function DragToRank({ challenge, onComplete }) {
   const [items, setItems] = useState(() =>
-    [...challenge.items].sort(() => Math.random() - 0.5).map((text, i) => ({ id: i, text }))
+    [...challenge.correctOrder].sort(() => Math.random() - 0.5).map((text, i) => ({ id: i, text }))
   );
   const [dragIdx, setDragIdx] = useState(null);
   const [submitted, setSubmitted] = useState(false);

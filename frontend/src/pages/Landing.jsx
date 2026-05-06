@@ -112,7 +112,7 @@ export default function Landing() {
             </button>
 
             <p style={{ textAlign: "center", fontSize: 12, color: "var(--gray-400)", marginTop: "1rem" }}>
-              45 questions · Approx. 25–35 minutes · Results shown at the end
+              30 questions · Approx. 15-20 minutes · Results shown at the end
             </p>
           </div>
         </div>

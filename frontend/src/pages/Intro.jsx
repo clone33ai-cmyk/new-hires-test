@@ -41,7 +41,7 @@ export default function Intro() {
               <div className="section-label">What to expect</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                 {[
-                  { icon: "📚", text: "45 questions covering company knowledge, your role, and real-world scenarios" },
+                  { icon: "📚", text: "30 questions covering company knowledge, your role, and real-world scenarios" },
                   isDispatcher
                     ? { icon: "🎙️", text: "A live voice call simulation — you'll speak with an AI customer and be graded on your script" }
                     : { icon: "🔍", text: "Field scenario questions testing your detection and repair decision-making" },
