@@ -33,51 +33,94 @@ const TYPE_COLORS = {
 };
 
 function ChallengeRenderer({ challenge, onComplete }) {
-  switch (challenge.type) {
-    case "drag_rank": return <DragToRank challenge={challenge} onComplete={onComplete} />;
-    case "hotspot": return <Hotspot challenge={challenge} onComplete={onComplete} />;
-    case "branching": return <BranchingScenario challenge={challenge} onComplete={onComplete} />;
-    case "estimate_builder": return <EstimateBuilder challenge={challenge} onComplete={onComplete} />;
-    case "text_thread": return <TextThread challenge={challenge} onComplete={onComplete} />;
-    case "timed": return <TimedPressure challenge={challenge} onComplete={onComplete} />;
-    case "symptom_diagnosis": return <SymptomDiagnosis challenge={challenge} onComplete={onComplete} />;
-    case "checklist": return <PreVisitChecklist challenge={challenge} onComplete={onComplete} />;
-    default: return <div>Unknown challenge type</div>;
+  if (!challenge) return null;
+  try {
+    switch (challenge.type) {
+      case "drag_rank": return <DragToRank challenge={challenge} onComplete={onComplete} />;
+      case "hotspot": return <Hotspot challenge={challenge} onComplete={onComplete} />;
+      case "branching": return <BranchingScenario challenge={challenge} onComplete={onComplete} />;
+      case "estimate_builder": return <EstimateBuilder challenge={challenge} onComplete={onComplete} />;
+      case "text_thread": return <TextThread challenge={challenge} onComplete={onComplete} />;
+      case "timed": return <TimedPressure challenge={challenge} onComplete={onComplete} />;
+      case "symptom_diagnosis": return <SymptomDiagnosis challenge={challenge} onComplete={onComplete} />;
+      case "checklist": return <PreVisitChecklist challenge={challenge} onComplete={onComplete} />;
+      default:
+        return (
+          <div style={{ padding: "2rem", textAlign: "center", color: "var(--gray-500)" }}>
+            <p>Challenge type "{challenge.type}" not found.</p>
+            <button className="btn btn-primary" style={{ marginTop: 16 }} onClick={() => onComplete(0)}>Skip →</button>
+          </div>
+        );
+    }
+  } catch (e) {
+    console.error("Challenge render error:", e);
+    return (
+      <div style={{ padding: "1rem" }}>
+        <p style={{ color: "var(--red)", marginBottom: 12 }}>Error loading challenge. Click below to continue.</p>
+        <button className="btn btn-primary" onClick={() => onComplete(0)}>Continue →</button>
+      </div>
+    );
   }
 }
 
 export default function Challenges() {
   const navigate = useNavigate();
-  const role = sessionStorage.getItem("evalRole") || "technician";
+  const [ready, setReady] = useState(false);
+  const [role, setRole] = useState("dispatcher");
+  const [phase, setPhase] = useState("intro");
+  const [currentIdx, setCurrentIdx] = useState(0);
+  const [scores, setScores] = useState([]);
+
+  // Read sessionStorage on mount only
+  useEffect(() => {
+    const savedRole = sessionStorage.getItem("evalRole");
+    const savedName = sessionStorage.getItem("evalName");
+    if (!savedRole || !savedName) {
+      // Allow direct navigation for testing — set defaults
+      sessionStorage.setItem("evalRole", savedRole || "dispatcher");
+      sessionStorage.setItem("evalName", savedName || "Candidate");
+    }
+    setRole(savedRole || "dispatcher");
+    setReady(true);
+  }, []);
+
+  if (!ready) {
+    return (
+      <div className="water-bg" style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <div style={{ color: "rgba(255,255,255,0.6)", fontSize: 16 }}>Loading challenges...</div>
+      </div>
+    );
+  }
+
   const isDispatcher = role === "dispatcher";
   const name = sessionStorage.getItem("evalName") || "Candidate";
   const challenges = isDispatcher ? dispatcherChallenges : technicianChallenges;
 
-  const [phase, setPhase] = useState("intro"); // intro | challenge | complete
-  const [currentIdx, setCurrentIdx] = useState(0);
-  const [scores, setScores] = useState([]);
-  const [showingChallenge, setShowingChallenge] = useState(false);
-
-  useEffect(() => {
-    if (!sessionStorage.getItem("evalRole")) navigate("/");
-  }, []);
+  if (!challenges || challenges.length === 0) {
+    return (
+      <div className="water-bg" style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: "2rem" }}>
+        <div className="card" style={{ maxWidth: 480, width: "100%" }}>
+          <div className="card-body text-center">
+            <div style={{ fontSize: 48, marginBottom: 16 }}>⚠️</div>
+            <h2>No challenges found for role: {role}</h2>
+            <button className="btn btn-primary" style={{ marginTop: 16 }} onClick={() => navigate(isDispatcher ? "/voice-sim" : "/results")}>
+              Continue to Next Step →
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   const handleComplete = (score) => {
-    const newScores = [...scores, { id: challenges[currentIdx].id, score }];
+    const newScores = [...scores, { id: challenges[currentIdx]?.id || currentIdx, score }];
     setScores(newScores);
-    setShowingChallenge(false);
-
     if (currentIdx + 1 >= challenges.length) {
       sessionStorage.setItem("challengeScores", JSON.stringify(newScores));
       setPhase("complete");
     } else {
-      setCurrentIdx(currentIdx + 1);
+      setCurrentIdx(prev => prev + 1);
     }
-  };
-
-  const handleStart = () => {
-    setPhase("challenge");
-    setShowingChallenge(true);
   };
 
   const handleNext = () => {
@@ -88,7 +131,7 @@ export default function Challenges() {
     ? Math.round(scores.reduce((s, sc) => s + sc.score, 0) / scores.length)
     : 0;
 
-  // Intro screen
+  // ── INTRO ──────────────────────────────────────────────
   if (phase === "intro") {
     return (
       <div className="water-bg" style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: "2rem" }}>
@@ -96,11 +139,9 @@ export default function Challenges() {
           <div className="card">
             <div className="card-header text-center">
               <div style={{ fontFamily: "var(--font-condensed)", fontSize: 11, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", color: "rgba(255,255,255,0.6)", marginBottom: 4 }}>
-                Part 2 of 3
+                Part 2 of {isDispatcher ? "3" : "2"}
               </div>
-              <h2 style={{ fontFamily: "var(--font-condensed)", fontSize: 28, fontWeight: 800 }}>
-                Interactive Challenges
-              </h2>
+              <h2 style={{ fontFamily: "var(--font-condensed)", fontSize: 28, fontWeight: 800 }}>Interactive Challenges</h2>
               <p style={{ color: "rgba(255,255,255,0.7)", fontSize: 14, marginTop: 4 }}>
                 {challenges.length} challenges · Hands-on scenarios
               </p>
@@ -109,26 +150,24 @@ export default function Challenges() {
               <p style={{ fontSize: 15, color: "var(--gray-600)", marginBottom: "1.25rem", lineHeight: 1.6 }}>
                 Great work on the quiz, {name}! Now for the interactive section — these challenges simulate real situations you'll face on the job.
               </p>
-
               <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: "1.5rem" }}>
-                {challenges.map((c, i) => {
+                {challenges.map((c) => {
                   const colors = TYPE_COLORS[c.type] || { bg: "var(--gray-50)", color: "var(--gray-600)" };
                   return (
-                    <div key={c.id} style={{ display: "flex", gap: 12, alignItems: "center", padding: "10px 14px", background: "var(--off-white)", borderRadius: "var(--radius)", border: "1px solid var(--gray-100)" }}>
-                      <span style={{ fontSize: 20, flexShrink: 0 }}>{c.icon}</span>
-                      <div style={{ flex: 1 }}>
+                    <div key={c.id} style={{ display: "flex", gap: 12, alignItems: "center", padding: "12px 16px", background: "var(--off-white)", borderRadius: "var(--radius)", border: "1px solid var(--gray-100)" }}>
+                      <span style={{ fontSize: 22, flexShrink: 0 }}>{c.icon}</span>
+                      <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 14, fontWeight: 600, color: "var(--gray-800)" }}>{c.title}</div>
                         <div style={{ fontSize: 12, color: "var(--gray-500)" }}>{c.subtitle}</div>
                       </div>
-                      <span style={{ fontSize: 11, fontWeight: 700, padding: "3px 8px", borderRadius: 99, background: colors.bg, color: colors.color, flexShrink: 0 }}>
-                        {TYPE_LABELS[c.type]}
+                      <span style={{ fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 99, background: colors.bg, color: colors.color, flexShrink: 0, whiteSpace: "nowrap" }}>
+                        {TYPE_LABELS[c.type] || c.type}
                       </span>
                     </div>
                   );
                 })}
               </div>
-
-              <button className="btn btn-primary btn-lg" style={{ width: "100%" }} onClick={handleStart}>
+              <button className="btn btn-primary btn-lg" style={{ width: "100%" }} onClick={() => setPhase("challenge")}>
                 Start Challenges →
               </button>
             </div>
@@ -138,47 +177,42 @@ export default function Challenges() {
     );
   }
 
-  // Complete screen
+  // ── COMPLETE ───────────────────────────────────────────
   if (phase === "complete") {
     return (
       <div className="water-bg" style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: "2rem" }}>
         <div className="container-sm slide-up" style={{ width: "100%" }}>
           <div className="card">
             <div className="card-header text-center">
-              <h2 style={{ fontFamily: "var(--font-condensed)", fontSize: 28, fontWeight: 800 }}>
-                Challenges Complete! 🎉
-              </h2>
+              <h2 style={{ fontFamily: "var(--font-condensed)", fontSize: 28, fontWeight: 800 }}>Challenges Complete! 🎉</h2>
             </div>
             <div className="card-body">
               <div style={{ textAlign: "center", marginBottom: "1.5rem" }}>
-                <div style={{ fontFamily: "var(--font-condensed)", fontSize: 56, fontWeight: 800, color: avgScore >= 80 ? "var(--green)" : avgScore >= 60 ? "var(--amber)" : "var(--red)" }}>
+                <div style={{ fontFamily: "var(--font-condensed)", fontSize: 64, fontWeight: 800, color: avgScore >= 80 ? "var(--green)" : avgScore >= 60 ? "var(--amber)" : "var(--red)" }}>
                   {avgScore}%
                 </div>
                 <div style={{ fontSize: 14, color: "var(--gray-500)" }}>Average across {challenges.length} challenges</div>
               </div>
-
-              <div style={{ display: "flex", flexDirection: "column", gap: 8, marginBottom: "1.5rem" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: "1.5rem" }}>
                 {scores.map((s, i) => {
                   const c = challenges[i];
+                  if (!c) return null;
                   const pct = s.score;
                   const color = pct >= 80 ? "var(--green)" : pct >= 60 ? "var(--amber)" : "var(--red)";
                   return (
                     <div key={s.id} style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                      <span style={{ fontSize: 18, flexShrink: 0 }}>{c.icon}</span>
+                      <span style={{ fontSize: 20, flexShrink: 0 }}>{c.icon}</span>
                       <div style={{ flex: 1 }}>
                         <div style={{ fontSize: 13, fontWeight: 500, color: "var(--gray-700)", marginBottom: 4 }}>{c.title}</div>
                         <div className="progress-bar">
                           <div style={{ height: "100%", width: `${pct}%`, background: color, borderRadius: 99, transition: "width 1s ease" }} />
                         </div>
                       </div>
-                      <span style={{ fontFamily: "var(--font-condensed)", fontSize: 16, fontWeight: 700, color, minWidth: 40, textAlign: "right" }}>
-                        {pct}%
-                      </span>
+                      <span style={{ fontFamily: "var(--font-condensed)", fontSize: 16, fontWeight: 700, color, minWidth: 40, textAlign: "right" }}>{pct}%</span>
                     </div>
                   );
                 })}
               </div>
-
               <button className="btn btn-primary btn-lg" style={{ width: "100%" }} onClick={handleNext}>
                 {isDispatcher ? "Continue to Voice Simulation →" : "See Final Results →"}
               </button>
@@ -189,8 +223,14 @@ export default function Challenges() {
     );
   }
 
-  // Active challenge
+  // ── ACTIVE CHALLENGE ───────────────────────────────────
   const challenge = challenges[currentIdx];
+  if (!challenge) {
+    // Safety: if index is out of bounds somehow, go to complete
+    setPhase("complete");
+    return null;
+  }
+
   const colors = TYPE_COLORS[challenge.type] || { bg: "var(--gray-50)", color: "var(--gray-600)" };
   const progressPct = (currentIdx / challenges.length) * 100;
 
@@ -211,19 +251,20 @@ export default function Challenges() {
           </div>
         </div>
 
-        {/* Progress */}
+        {/* Progress bar */}
         <div className="progress-bar" style={{ marginBottom: "1.5rem" }}>
           <div className="progress-fill" style={{ width: `${progressPct}%` }} />
         </div>
 
-        <div className="card fade-in" key={challenge.id}>
+        {/* Challenge card */}
+        <div className="card fade-in" key={`challenge-${currentIdx}`}>
           <div className="card-body">
-            {/* Challenge header */}
+            {/* Header */}
             <div style={{ display: "flex", gap: 10, alignItems: "flex-start", marginBottom: "1.25rem" }}>
               <div style={{ flex: 1 }}>
                 <div style={{ display: "flex", gap: 6, marginBottom: 6, flexWrap: "wrap" }}>
                   <span style={{ fontSize: 11, fontWeight: 700, padding: "3px 10px", borderRadius: 99, background: colors.bg, color: colors.color }}>
-                    {TYPE_LABELS[challenge.type]}
+                    {TYPE_LABELS[challenge.type] || challenge.type}
                   </span>
                   <span style={{ fontSize: 11, fontWeight: 600, padding: "3px 10px", borderRadius: 99, background: "var(--gray-100)", color: "var(--gray-500)" }}>
                     {challenge.section}
@@ -243,18 +284,20 @@ export default function Challenges() {
           </div>
         </div>
 
-        {/* Challenge dots */}
+        {/* Progress dots */}
         <div style={{ display: "flex", gap: 6, justifyContent: "center", marginTop: "1.5rem", flexWrap: "wrap" }}>
           {challenges.map((c, i) => (
-            <div key={c.id} style={{
-              width: 8, height: 8, borderRadius: "50%",
+            <div key={c.id} title={c.title} style={{
+              width: i === currentIdx ? 24 : 8,
+              height: 8, borderRadius: 99,
               background: i < currentIdx
                 ? (scores[i]?.score >= 80 ? "#4ade80" : scores[i]?.score >= 60 ? "#fbbf24" : "#f87171")
                 : i === currentIdx ? "var(--pool-cyan)" : "rgba(255,255,255,0.2)",
-              transition: "all 0.3s",
-            }} title={c.title} />
+              transition: "all 0.3s ease",
+            }} />
           ))}
         </div>
+
       </div>
     </div>
   );
