@@ -6,17 +6,21 @@ let vapiInstance = null;
 export default function VoiceSimulation() {
   const navigate = useNavigate();
   const [phase, setPhase] = useState("briefing");
-  const [transcript, setTranscript] = useState([]);
+  const [displayLines, setDisplayLines] = useState([]);
   const [callDuration, setCallDuration] = useState(0);
   const [isMuted, setIsMuted] = useState(false);
-  const [statusMsg, setStatusMsg] = useState("");
   const [error, setError] = useState(null);
-  const timerRef = useRef(null);
-  const transcriptRef = useRef([]);
-  const transcriptEndRef = useRef(null);
-  const evaluatingRef = useRef(false);
-  const name = sessionStorage.getItem("evalName") || "Candidate";
+  const [gradingStatus, setGradingStatus] = useState("");
 
+  // Use refs for everything the call-end handler needs
+  // (React state is stale inside event handlers)
+  const linesRef = useRef([]);
+  const fullConversationRef = useRef([]);
+  const timerRef = useRef(null);
+  const transcriptEndRef = useRef(null);
+  const hasGradedRef = useRef(false);
+
+  const name = sessionStorage.getItem("evalName") || "Candidate";
   const VAPI_ASSISTANT_ID = import.meta.env.VITE_VAPI_ASSISTANT_ID || "beef8108-20f1-4a2f-9a4d-e24052e04d6f";
   const VAPI_PUBLIC_KEY = import.meta.env.VITE_VAPI_PUBLIC_KEY;
 
@@ -29,76 +33,69 @@ export default function VoiceSimulation() {
 
   useEffect(() => {
     transcriptEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [transcript]);
+  }, [displayLines]);
 
-  // Keep ref in sync with state so call-end handler can read latest transcript
-  const updateTranscript = (updater) => {
-    setTranscript(prev => {
-      const next = updater(prev);
-      transcriptRef.current = next;
-      return next;
-    });
-  };
-
-  const evaluateTranscript = async (lines) => {
-    if (evaluatingRef.current) return;
-    evaluatingRef.current = true;
+  const gradeCall = async () => {
+    if (hasGradedRef.current) return;
+    hasGradedRef.current = true;
     setPhase("evaluating");
-    setStatusMsg("Claude is grading your call...");
+
+    // Build transcript — try fullConversation first, fall back to linesRef
+    let lines = fullConversationRef.current.length > 0
+      ? fullConversationRef.current
+      : linesRef.current;
 
     const transcriptText = lines
-      .filter(t => t.final !== false && t.text?.trim())
-      .map(t => `${t.role === "user" ? name + " (Dispatcher)" : "CUSTOMER (Mike)"}: ${t.text.trim()}`)
+      .filter(l => l.text && l.text.trim().length > 0)
+      .map(l => `${l.role === "user" ? name + " (Dispatcher)" : "CUSTOMER (Mike)"}: ${l.text.trim()}`)
       .join("\n");
 
-    // Always save the transcript for display
+    console.log("Grading transcript:", transcriptText.length, "chars");
+    console.log("Transcript preview:", transcriptText.slice(0, 200));
+
+    // Always save transcript regardless of grading outcome
     sessionStorage.setItem("voiceTranscript", transcriptText);
 
-    if (!transcriptText || transcriptText.length < 30) {
+    if (!transcriptText || transcriptText.length < 20) {
       sessionStorage.setItem("voiceEval", JSON.stringify({
         totalScore: 0,
         recommendation: "NOT RECOMMENDED",
-        summary: "The call was too short or no transcript was captured. Please ensure your microphone is working and the call lasts at least 1-2 minutes.",
-        rubricResults: [
-          { item: "Proper greeting", status: "missed", points: 0, maxPoints: 5, note: "No transcript captured" },
-          { item: "Explained test details", status: "missed", points: 0, maxPoints: 10, note: "No transcript captured" },
-          { item: "Quoted correct price ($375)", status: "missed", points: 0, maxPoints: 10, note: "No transcript captured" },
-          { item: "Mentioned warranty", status: "missed", points: 0, maxPoints: 10, note: "No transcript captured" },
-        ],
-        coachingNotes: ["Ensure microphone permission is granted in your browser.", "Make sure the call lasts at least 2-3 minutes.", "Speak clearly and wait for the customer to finish before responding."]
+        summary: "No transcript was captured. Please check that your microphone was working and the call lasted at least 1-2 minutes.",
+        rubricResults: [],
+        coachingNotes: ["Microphone may not have been active.", "Try the call again with mic permissions granted."]
       }));
-      evaluatingRef.current = false;
       setPhase("done");
       return;
     }
 
     try {
-      setStatusMsg("Sending transcript to Claude for grading...");
+      setGradingStatus("Sending to Claude for grading...");
+
       const res = await fetch("/api/evaluate/transcript", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ transcript: transcriptText, role: "dispatcher" }),
       });
 
-      if (!res.ok) throw new Error(`Server error: ${res.status}`);
-      const data = await res.json();
+      const text = await res.text();
+      console.log("Grading API response:", res.status, text.slice(0, 300));
 
-      if (data.error) throw new Error(data.error);
+      if (!res.ok) throw new Error(`API returned ${res.status}: ${text}`);
 
+      const data = JSON.parse(text);
       sessionStorage.setItem("voiceEval", JSON.stringify(data));
-      setStatusMsg("Grading complete!");
+      setGradingStatus("Complete!");
     } catch (err) {
-      console.error("Evaluation error:", err);
-      // Save a fallback but still save the transcript
+      console.error("Grading failed:", err);
+      // Save a placeholder with the transcript so at least that shows
       sessionStorage.setItem("voiceEval", JSON.stringify({
-        totalScore: 0,
-        recommendation: "CONSIDER",
-        summary: "Grading service error — transcript was captured but could not be evaluated automatically. Please review the transcript manually.",
+        totalScore: null,
+        recommendation: "MANUAL REVIEW",
+        summary: "Automatic grading encountered an error. Your transcript was saved — please review it manually below.",
         rubricResults: [],
-        coachingNotes: ["Manual review required — see transcript below."]
+        coachingNotes: ["Grading error: " + err.message]
       }));
     } finally {
-      evaluatingRef.current = false;
       setPhase("done");
     }
   };
@@ -108,11 +105,14 @@ export default function VoiceSimulation() {
       setError("VITE_VAPI_PUBLIC_KEY is not set in Railway environment variables.");
       return;
     }
+
     try {
       setPhase("calling");
       setError(null);
-      transcriptRef.current = [];
-      setTranscript([]);
+      linesRef.current = [];
+      fullConversationRef.current = [];
+      hasGradedRef.current = false;
+      setDisplayLines([]);
 
       const { default: Vapi } = await import("@vapi-ai/web");
       vapiInstance = new Vapi(VAPI_PUBLIC_KEY);
@@ -122,39 +122,65 @@ export default function VoiceSimulation() {
         timerRef.current = setInterval(() => setCallDuration(d => d + 1), 1000);
       });
 
-      // This fires when call ends — either user clicks End Call OR VAPI ends it naturally
       vapiInstance.on("call-end", () => {
         clearInterval(timerRef.current);
-        // Use the ref to get latest transcript at time of call end
-        const finalLines = transcriptRef.current;
-        evaluateTranscript(finalLines);
+        gradeCall();
       });
 
       vapiInstance.on("message", (msg) => {
-        // Capture both transcript chunks and conversation updates
+        // Method 1: real-time transcript chunks
         if (msg.type === "transcript") {
-          const role = msg.role;
-          const text = msg.transcript;
+          const role = msg.role; // "user" or "assistant"
+          const text = msg.transcript || "";
           const isFinal = msg.transcriptType === "final";
 
-          updateTranscript(prev => {
-            const last = prev[prev.length - 1];
-            if (last && last.role === role && !last.final) {
-              return [...prev.slice(0, -1), { role, text, final: isFinal }];
-            }
-            return [...prev, { role, text, final: isFinal }];
-          });
+          const newLine = { role, text, final: isFinal };
+
+          // Update ref (for grading)
+          const prev = linesRef.current;
+          const last = prev[prev.length - 1];
+          if (last && last.role === role && !last.final) {
+            linesRef.current = [...prev.slice(0, -1), newLine];
+          } else {
+            linesRef.current = [...prev, newLine];
+          }
+
+          // Update display state
+          setDisplayLines([...linesRef.current]);
         }
 
-        // VAPI also sends full conversation via conversation-update
-        if (msg.type === "conversation-update" && msg.conversation) {
-          const lines = msg.conversation
-            .filter(m => m.role === "user" || m.role === "assistant")
-            .filter(m => m.content?.trim())
-            .map(m => ({ role: m.role === "user" ? "user" : "assistant", text: m.content, final: true }));
-          if (lines.length > transcriptRef.current.length) {
-            transcriptRef.current = lines;
-            setTranscript(lines);
+        // Method 2: full conversation object (more reliable)
+        if (msg.type === "conversation-update" && Array.isArray(msg.conversation)) {
+          const mapped = msg.conversation
+            .filter(m => (m.role === "user" || m.role === "assistant") && m.content?.trim())
+            .map(m => ({ role: m.role === "user" ? "user" : "assistant", text: m.content.trim(), final: true }));
+
+          if (mapped.length > 0) {
+            fullConversationRef.current = mapped;
+            // Also update display with these (more complete)
+            setDisplayLines(mapped);
+          }
+        }
+
+        // Method 3: end-of-call-report from VAPI (most complete)
+        if (msg.type === "end-of-call-report") {
+          console.log("end-of-call-report received:", JSON.stringify(msg).slice(0, 500));
+          if (msg.transcript) {
+            // VAPI sends a plain text transcript string
+            const lines = msg.transcript.split("\n")
+              .filter(l => l.trim())
+              .map(l => {
+                const isAssistant = l.toLowerCase().startsWith("assistant:") || l.toLowerCase().startsWith("mike");
+                const text = l.replace(/^(assistant|user|mike|dispatcher)[:\s]*/i, "").trim();
+                return { role: isAssistant ? "assistant" : "user", text, final: true };
+              });
+            if (lines.length > 0) fullConversationRef.current = lines;
+          }
+          if (msg.messages && Array.isArray(msg.messages)) {
+            const mapped = msg.messages
+              .filter(m => (m.role === "user" || m.role === "assistant") && m.content?.trim())
+              .map(m => ({ role: m.role, text: m.content.trim(), final: true }));
+            if (mapped.length > 0) fullConversationRef.current = mapped;
           }
         }
       });
@@ -162,7 +188,7 @@ export default function VoiceSimulation() {
       vapiInstance.on("error", (e) => {
         console.error("VAPI error:", e);
         clearInterval(timerRef.current);
-        setError("Call error: " + (e?.message || e?.error?.message || "Check your VAPI key and assistant ID."));
+        setError("Call error: " + (e?.message || e?.error?.message || "Unknown error. Check your VAPI key."));
         setPhase("briefing");
       });
 
@@ -177,10 +203,7 @@ export default function VoiceSimulation() {
 
   const endCallManually = () => {
     clearInterval(timerRef.current);
-    if (vapiInstance) {
-      try { vapiInstance.stop(); } catch(e) {}
-    }
-    // call-end event will fire and trigger evaluateTranscript
+    if (vapiInstance) { try { vapiInstance.stop(); } catch(e) { gradeCall(); } }
   };
 
   const handleMute = () => {
@@ -189,7 +212,7 @@ export default function VoiceSimulation() {
 
   const formatTime = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 
-  // ── BRIEFING ──────────────────────────────────────
+  // ── BRIEFING ──
   if (phase === "briefing") {
     return (
       <div className="water-bg" style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: "2rem" }}>
@@ -203,41 +226,28 @@ export default function VoiceSimulation() {
               <div style={{ padding: "1rem", background: "rgba(0,119,182,0.06)", borderRadius: "var(--radius)", border: "1px solid rgba(0,119,182,0.15)", marginBottom: "1.5rem" }}>
                 <div style={{ fontWeight: 700, fontSize: 15, color: "var(--pool-blue-dark)", marginBottom: 8 }}>Your scenario:</div>
                 <p style={{ fontSize: 14, color: "var(--gray-700)", lineHeight: 1.6, margin: 0 }}>
-                  An inbound call is coming in. The AI plays <strong>Mike Rodriguez</strong>, a homeowner who suspects a pool leak. He's slightly skeptical about cost. Handle the call exactly as you would on the job — work through the full script and move toward booking.
+                  An inbound call is coming in. The AI plays <strong>Mike Rodriguez</strong>, a homeowner who suspects a pool leak. Handle the call exactly as you would on the job — use the full script and move toward booking.
                 </p>
               </div>
               <div style={{ marginBottom: "1.5rem" }}>
-                <div className="section-label" style={{ marginBottom: 8 }}>You'll be graded on:</div>
-                {[
-                  "Proper greeting with your name",
-                  "Explaining what the test includes (plumbing, shell, equipment pad, seals)",
-                  "Quoting $375 correctly",
-                  "Mentioning 1–3 hour test duration",
-                  "Saying customer doesn't need to be home",
-                  "Mentioning the full report + repair estimate",
-                  "Mentioning the 3-year no-leak warranty",
-                  "Offering to send a text / collect info",
-                  "Mentioning prepayment + free cancellation",
-                  "Professional, confident, friendly tone",
-                ].map((item, i) => (
+                <div className="section-label" style={{ marginBottom: 8 }}>You will be graded on:</div>
+                {["Proper greeting with your name", "Explaining what the test includes", "Quoting $375 correctly", "1-3 hour test duration", "Customer doesn't need to be home", "Full report + repair estimate included", "3-year no-leak warranty", "Offer to send text / collect info", "Prepayment policy + free cancellation", "Professional confident tone"].map((item, i) => (
                   <div key={i} style={{ display: "flex", gap: 8, fontSize: 14, color: "var(--gray-700)", padding: "3px 0" }}>
                     <span style={{ color: "var(--pool-blue)", fontWeight: 700, flexShrink: 0 }}>✓</span> {item}
                   </div>
                 ))}
               </div>
               <div style={{ padding: "10px 14px", background: "var(--amber-light)", borderRadius: "var(--radius)", marginBottom: "1.5rem", fontSize: 13, color: "var(--amber)" }}>
-                ⚠️ Allow microphone access when your browser asks. The call will be recorded and graded automatically when it ends.
+                ⚠️ Allow microphone access when your browser asks. Your call will be automatically graded when it ends.
               </div>
               {error && (
                 <div style={{ padding: "12px 14px", background: "var(--red-light)", borderRadius: "var(--radius)", marginBottom: "1rem", fontSize: 13, color: "var(--red)", lineHeight: 1.6 }}>
                   <strong>Error:</strong> {error}
                 </div>
               )}
-              <button className="btn btn-primary btn-lg" style={{ width: "100%" }} onClick={initVapi}>
-                📞 Answer the Call
-              </button>
+              <button className="btn btn-primary btn-lg" style={{ width: "100%" }} onClick={initVapi}>📞 Answer the Call</button>
               <button onClick={() => navigate("/results")} style={{ display: "block", width: "100%", textAlign: "center", marginTop: 12, background: "none", border: "none", color: "var(--gray-400)", fontSize: 13, cursor: "pointer" }}>
-                Skip voice simulation → go to results
+                Skip voice simulation
               </button>
             </div>
           </div>
@@ -246,25 +256,25 @@ export default function VoiceSimulation() {
     );
   }
 
-  // ── EVALUATING ─────────────────────────────────────
+  // ── EVALUATING ──
   if (phase === "evaluating") {
     return (
       <div className="water-bg" style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: "2rem" }}>
         <div className="container-sm" style={{ width: "100%" }}>
           <div className="card">
             <div className="card-body text-center" style={{ padding: "3rem 2rem" }}>
-              <div style={{ fontSize: 64, marginBottom: "1rem" }}>🤖</div>
+              <div style={{ fontSize: 56, marginBottom: "1rem" }}>🤖</div>
               <h2 style={{ fontFamily: "var(--font-condensed)", fontSize: 26, fontWeight: 800, marginBottom: 8 }}>Grading Your Call</h2>
-              <p style={{ fontSize: 15, color: "var(--gray-600)", marginBottom: "1.5rem", lineHeight: 1.6 }}>
-                Claude is reviewing your transcript against the Mr. Pool Leak script rubric. This takes about 10–15 seconds.
+              <p style={{ fontSize: 14, color: "var(--gray-600)", marginBottom: "1.5rem", lineHeight: 1.6 }}>
+                Claude is reviewing your transcript against the Mr. Pool Leak Repair script. This takes about 10-15 seconds.
               </p>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 10, color: "var(--pool-blue)", fontWeight: 600, fontSize: 14 }}>
                 <div style={{ width: 20, height: 20, borderRadius: "50%", border: "3px solid var(--pool-blue)", borderTopColor: "transparent", animation: "spin 0.8s linear infinite" }} />
-                {statusMsg || "Processing..."}
+                {gradingStatus || "Processing transcript..."}
               </div>
               <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
               <p style={{ fontSize: 12, color: "var(--gray-400)", marginTop: "2rem" }}>
-                {transcript.filter(t => t.text?.trim()).length} transcript lines captured
+                {(fullConversationRef.current.length || linesRef.current.length)} lines captured
               </p>
             </div>
           </div>
@@ -273,133 +283,167 @@ export default function VoiceSimulation() {
     );
   }
 
-  // ── DONE ───────────────────────────────────────────
+  // ── DONE ──
   if (phase === "done") {
     const evalData = JSON.parse(sessionStorage.getItem("voiceEval") || "{}");
-    const score = evalData.totalScore ?? 0;
-    const scoreColor = score >= 85 ? "var(--green)" : score >= 65 ? "var(--amber)" : "var(--red)";
+    const score = evalData.totalScore;
+    const hasScore = score !== null && score !== undefined;
+    const scoreColor = !hasScore ? "var(--gray-400)" : score >= 85 ? "var(--green)" : score >= 65 ? "var(--amber)" : "var(--red)";
+    const transcript = sessionStorage.getItem("voiceTranscript") || "";
+    const transcriptLines = transcript.split("\n").filter(l => l.trim());
 
     return (
-      <div className="water-bg" style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: "2rem" }}>
-        <div className="container-sm slide-up" style={{ width: "100%" }}>
-          <div className="card">
-            <div className="card-header text-center">
-              <h2 style={{ fontFamily: "var(--font-condensed)", fontSize: 24, fontWeight: 800 }}>📞 Call Graded!</h2>
-            </div>
-            <div className="card-body text-center">
-              <div style={{ fontFamily: "var(--font-condensed)", fontSize: 72, fontWeight: 800, color: scoreColor, lineHeight: 1, marginBottom: 8 }}>
-                {score}
-              </div>
-              <div style={{ fontSize: 14, color: "var(--gray-500)", marginBottom: "0.5rem" }}>out of 100</div>
-              <div className={`badge ${evalData.recommendation === "STRONG HIRE" ? "badge-green" : evalData.recommendation === "CONSIDER" ? "badge-amber" : "badge-red"}`} style={{ marginBottom: "1rem" }}>
-                {evalData.recommendation || "REVIEWED"}
-              </div>
-              <p style={{ fontSize: 14, color: "var(--gray-600)", lineHeight: 1.6, marginBottom: "1.5rem" }}>
-                {evalData.summary}
-              </p>
+      <div className="water-bg" style={{ minHeight: "100vh", padding: "2rem 1rem" }}>
+        <div className="container" style={{ width: "100%" }}>
 
-              {/* Quick rubric preview */}
-              {evalData.rubricResults && evalData.rubricResults.length > 0 && (
-                <div style={{ textAlign: "left", marginBottom: "1.5rem", background: "var(--off-white)", borderRadius: "var(--radius)", padding: "1rem" }}>
-                  <div className="section-label" style={{ marginBottom: 8 }}>Quick rubric preview:</div>
-                  {evalData.rubricResults.slice(0, 5).map((r, i) => (
-                    <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 13, padding: "3px 0" }}>
-                      <span>{r.status === "hit" ? "✅" : r.status === "partial" ? "🟡" : "❌"}</span>
-                      <span style={{ flex: 1, color: "var(--gray-700)" }}>{r.item}</span>
-                      <span style={{ fontWeight: 700, color: r.points > 0 ? "var(--green)" : "var(--red)" }}>{r.points}/{r.maxPoints}</span>
-                    </div>
-                  ))}
-                  {evalData.rubricResults.length > 5 && (
-                    <div style={{ fontSize: 12, color: "var(--gray-400)", marginTop: 6 }}>+ {evalData.rubricResults.length - 5} more items in full results</div>
-                  )}
+          {/* Score card */}
+          <div className="card" style={{ marginBottom: "1rem" }}>
+            <div className="card-body">
+              <div style={{ display: "flex", alignItems: "center", gap: "1.5rem" }}>
+                <div style={{ textAlign: "center", flexShrink: 0 }}>
+                  <div style={{ fontFamily: "var(--font-condensed)", fontSize: 64, fontWeight: 800, color: scoreColor, lineHeight: 1 }}>
+                    {hasScore ? score : "—"}
+                  </div>
+                  <div style={{ fontSize: 12, color: "var(--gray-400)" }}>/ 100</div>
                 </div>
-              )}
-
-              <button className="btn btn-primary btn-lg" style={{ width: "100%" }} onClick={() => navigate("/results")}>
-                View Full Results & Transcript →
-              </button>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontFamily: "var(--font-condensed)", fontSize: 20, fontWeight: 800, marginBottom: 6 }}>Call Graded</div>
+                  <div className={`badge ${evalData.recommendation === "STRONG HIRE" ? "badge-green" : evalData.recommendation === "CONSIDER" ? "badge-amber" : "badge-red"}`} style={{ marginBottom: 8 }}>
+                    {evalData.recommendation || "REVIEWED"}
+                  </div>
+                  <p style={{ fontSize: 14, color: "var(--gray-600)", lineHeight: 1.6, margin: 0 }}>{evalData.summary}</p>
+                </div>
+              </div>
             </div>
           </div>
+
+          {/* Rubric preview */}
+          {evalData.rubricResults && evalData.rubricResults.length > 0 && (
+            <div className="card" style={{ marginBottom: "1rem" }}>
+              <div style={{ padding: "1rem 1.5rem", borderBottom: "1px solid var(--gray-100)" }}>
+                <div className="section-label">Script Rubric</div>
+              </div>
+              <div style={{ padding: "0.5rem 1.5rem" }}>
+                {evalData.rubricResults.map((r, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 0", borderBottom: i < evalData.rubricResults.length - 1 ? "1px solid var(--gray-100)" : "none" }}>
+                    <span style={{ fontSize: 18, flexShrink: 0 }}>{r.status === "hit" ? "✅" : r.status === "partial" ? "🟡" : "❌"}</span>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 14, fontWeight: 600 }}>{r.item}</div>
+                      {r.note && <div style={{ fontSize: 12, color: "var(--gray-500)", marginTop: 2 }}>{r.note}</div>}
+                    </div>
+                    <div style={{ fontFamily: "var(--font-condensed)", fontSize: 15, fontWeight: 800, color: r.points > 0 ? "var(--green)" : "var(--red)", flexShrink: 0 }}>
+                      {r.points}/{r.maxPoints}
+                    </div>
+                  </div>
+                ))}
+                <div style={{ display: "flex", justifyContent: "space-between", padding: "12px 0", fontWeight: 700, fontSize: 15 }}>
+                  <span>Total</span>
+                  <span style={{ color: scoreColor }}>{hasScore ? score : "—"} / 100</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Coaching notes */}
+          {evalData.coachingNotes && evalData.coachingNotes.length > 0 && (
+            <div className="card" style={{ marginBottom: "1rem" }}>
+              <div style={{ padding: "1rem 1.5rem", borderBottom: "1px solid var(--gray-100)" }}>
+                <div className="section-label">Coaching Notes</div>
+              </div>
+              <div style={{ padding: "1rem 1.5rem", display: "flex", flexDirection: "column", gap: 8 }}>
+                {evalData.coachingNotes.map((note, i) => (
+                  <div key={i} style={{ display: "flex", gap: 10, padding: "10px 14px", background: "var(--off-white)", borderRadius: "var(--radius)", fontSize: 14, color: "var(--gray-700)", lineHeight: 1.6, borderLeft: "3px solid var(--pool-blue)" }}>
+                    <span style={{ color: "var(--pool-blue)", fontWeight: 700, flexShrink: 0 }}>💡</span>
+                    {note}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Full transcript */}
+          {transcriptLines.length > 0 && (
+            <div className="card" style={{ marginBottom: "1rem" }}>
+              <div style={{ padding: "1rem 1.5rem", borderBottom: "1px solid var(--gray-100)" }}>
+                <div className="section-label">Full Call Transcript</div>
+              </div>
+              <div style={{ padding: "1rem 1.5rem", display: "flex", flexDirection: "column", gap: 8, maxHeight: 400, overflowY: "auto" }}>
+                {transcriptLines.map((line, i) => {
+                  const isYou = line.includes("(Dispatcher)") || line.startsWith(name);
+                  const text = line.replace(/^[^:]+:\s*/, "");
+                  return (
+                    <div key={i} style={{ display: "flex", justifyContent: isYou ? "flex-end" : "flex-start" }}>
+                      <div style={{
+                        maxWidth: "80%", padding: "8px 14px", fontSize: 13, lineHeight: 1.5,
+                        background: isYou ? "var(--pool-blue)" : "var(--gray-100)",
+                        color: isYou ? "white" : "var(--gray-800)",
+                        borderRadius: isYou ? "14px 14px 4px 14px" : "14px 14px 14px 4px",
+                      }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, opacity: 0.65, marginBottom: 2, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                          {isYou ? name : "Mike — Customer"}
+                        </div>
+                        {text}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          <button className="btn btn-primary btn-lg" style={{ width: "100%", marginBottom: "2rem" }} onClick={() => navigate("/results")}>
+            View Full Results →
+          </button>
         </div>
       </div>
     );
   }
 
-  // ── CALLING / ACTIVE ───────────────────────────────
+  // ── CALLING / ACTIVE ──
   return (
     <div className="water-bg" style={{ minHeight: "100vh", padding: "2rem 1rem" }}>
       <div className="container" style={{ width: "100%" }}>
-
-        {/* Call status bar */}
         <div className="card" style={{ marginBottom: "1rem" }}>
           <div style={{ padding: "1rem 1.5rem", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 10 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-              <div style={{
-                width: 44, height: 44, borderRadius: "50%", fontSize: 20,
-                background: phase === "active" ? "var(--green)" : "var(--amber)",
-                display: "flex", alignItems: "center", justifyContent: "center",
-              }}>
+              <div style={{ width: 44, height: 44, borderRadius: "50%", fontSize: 20, background: phase === "active" ? "var(--green)" : "var(--amber)", display: "flex", alignItems: "center", justifyContent: "center" }}>
                 {phase === "calling" ? "⏳" : "📞"}
               </div>
               <div>
-                <div style={{ fontWeight: 700, fontSize: 15 }}>
-                  {phase === "calling" ? "Connecting to Mike..." : "Mike Rodriguez — Live Call"}
-                </div>
-                <div style={{ fontSize: 12, color: "var(--gray-500)" }}>
-                  {phase === "active" ? `Duration: ${formatTime(callDuration)} · Call will be graded when it ends` : "Initializing..."}
-                </div>
+                <div style={{ fontWeight: 700, fontSize: 15 }}>{phase === "calling" ? "Connecting to Mike..." : "Mike Rodriguez — Live Call"}</div>
+                <div style={{ fontSize: 12, color: "var(--gray-500)" }}>{phase === "active" ? `${formatTime(callDuration)} · Will be graded automatically when call ends` : "Connecting..."}</div>
               </div>
             </div>
             {phase === "active" && (
               <div style={{ display: "flex", gap: 8 }}>
-                <button className={`btn btn-sm ${isMuted ? "btn-danger" : "btn-outline"}`} onClick={handleMute}>
-                  {isMuted ? "🔇 Unmute" : "🎤 Mute"}
-                </button>
-                <button className="btn btn-sm btn-danger" onClick={endCallManually}>
-                  End Call
-                </button>
+                <button className={`btn btn-sm ${isMuted ? "btn-danger" : "btn-outline"}`} onClick={handleMute}>{isMuted ? "🔇 Unmute" : "🎤 Mute"}</button>
+                <button className="btn btn-sm btn-danger" onClick={endCallManually}>End Call</button>
               </div>
             )}
           </div>
         </div>
 
-        {/* Pulse orb */}
         <div style={{ display: "flex", justifyContent: "center", marginBottom: "1.5rem" }}>
           <div className={`call-orb ${phase === "active" ? "active" : ""}`} style={{ opacity: phase === "calling" ? 0.5 : 1 }}>
             <span style={{ fontSize: 48 }}>📞</span>
           </div>
         </div>
 
-        {/* Live transcript */}
         <div className="card">
           <div style={{ padding: "0.75rem 1.5rem", borderBottom: "1px solid var(--gray-100)", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
             <div className="section-label" style={{ margin: 0 }}>Live Transcript</div>
-            {phase === "active" && (
-              <div style={{ display: "flex", gap: 4, alignItems: "center" }}>
-                <div style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--red)", animation: "pulse-ring 1s ease-in-out infinite" }} />
-                <span style={{ fontSize: 11, fontWeight: 600, color: "var(--red)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Recording</span>
-              </div>
-            )}
+            {phase === "active" && <div style={{ display: "flex", gap: 4, alignItems: "center" }}><div style={{ width: 8, height: 8, borderRadius: "50%", background: "var(--red)", animation: "pulse-ring 1s ease-in-out infinite" }} /><span style={{ fontSize: 11, fontWeight: 600, color: "var(--red)", textTransform: "uppercase", letterSpacing: "0.06em" }}>Recording</span></div>}
           </div>
-          <div style={{ padding: "1rem 1.5rem", minHeight: 300, maxHeight: 450, overflowY: "auto" }}>
-            {transcript.filter(t => t.text?.trim()).length === 0 ? (
+          <div style={{ padding: "1rem 1.5rem", minHeight: 300, maxHeight: 420, overflowY: "auto" }}>
+            {displayLines.filter(t => t.text?.trim()).length === 0 ? (
               <div style={{ color: "var(--gray-400)", fontSize: 14, textAlign: "center", paddingTop: "3rem" }}>
-                {phase === "calling" ? "📡 Connecting — please wait..." : "Start speaking — transcript will appear here in real time."}
+                {phase === "calling" ? "📡 Connecting — please wait..." : "Start speaking — transcript appears here in real time."}
               </div>
             ) : (
-              transcript.filter(t => t.text?.trim()).map((t, i) => (
+              displayLines.filter(t => t.text?.trim()).map((t, i) => (
                 <div key={i} style={{ display: "flex", justifyContent: t.role === "user" ? "flex-end" : "flex-start", marginBottom: 10 }}>
-                  <div style={{
-                    maxWidth: "78%", padding: "8px 14px",
-                    borderRadius: t.role === "user" ? "14px 14px 4px 14px" : "14px 14px 14px 4px",
-                    background: t.role === "user" ? "var(--pool-blue)" : "var(--gray-100)",
-                    color: t.role === "user" ? "white" : "var(--gray-800)",
-                    fontSize: 14, lineHeight: 1.5,
-                    opacity: t.final === false ? 0.6 : 1,
-                  }}>
-                    <div style={{ fontSize: 10, fontWeight: 700, opacity: 0.65, marginBottom: 2, textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                      {t.role === "user" ? `${name} (You)` : "Mike — Customer"}
-                    </div>
+                  <div style={{ maxWidth: "78%", padding: "8px 14px", borderRadius: t.role === "user" ? "14px 14px 4px 14px" : "14px 14px 14px 4px", background: t.role === "user" ? "var(--pool-blue)" : "var(--gray-100)", color: t.role === "user" ? "white" : "var(--gray-800)", fontSize: 14, lineHeight: 1.5 }}>
+                    <div style={{ fontSize: 10, fontWeight: 700, opacity: 0.65, marginBottom: 2, textTransform: "uppercase", letterSpacing: "0.05em" }}>{t.role === "user" ? `${name} (You)` : "Mike — Customer"}</div>
                     {t.text}
                   </div>
                 </div>
@@ -408,10 +452,9 @@ export default function VoiceSimulation() {
             <div ref={transcriptEndRef} />
           </div>
           <div style={{ padding: "0.75rem 1.5rem", borderTop: "1px solid var(--gray-100)", fontSize: 12, color: "var(--gray-400)" }}>
-            Your call will be automatically graded by Claude when you click "End Call" or when Mike hangs up.
+            Your call will be graded automatically when you click "End Call" or when Mike hangs up.
           </div>
         </div>
-
       </div>
     </div>
   );
