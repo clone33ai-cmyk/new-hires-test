@@ -161,3 +161,24 @@ router.get("/health", async (req, res) => {
 });
 
 module.exports = router;
+
+// GET /api/evaluate/test — test Claude API directly with a sample transcript
+router.get("/test", async (req, res) => {
+  try {
+    if (!apiKey) return res.json({ status: "error", message: "ANTHROPIC_API_KEY not set" });
+
+    const response = await client.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 100,
+      messages: [{ role: "user", content: "Say hello in exactly 5 words." }],
+    });
+
+    res.json({
+      status: "ok",
+      keyPrefix: apiKey.slice(0, 14) + "...",
+      claudeResponse: response.content[0].text,
+    });
+  } catch (err) {
+    res.json({ status: "error", message: err.message, type: err.constructor?.name });
+  }
+});

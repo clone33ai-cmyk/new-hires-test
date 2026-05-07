@@ -127,9 +127,15 @@ router.post("/webhook", async (req, res) => {
 
 // GET /api/vapi/result/:callId
 router.get("/result/:callId", (req, res) => {
+  // Prevent Railway/browser caching so polling always gets fresh data
+  res.set("Cache-Control", "no-store, no-cache, must-revalidate, proxy-revalidate");
+  res.set("Pragma", "no-cache");
+  res.set("Expires", "0");
+  res.set("Surrogate-Control", "no-store");
+
   const result = callResults[req.params.callId];
-  if (!result) return res.json({ status: "pending" });
-  res.json(result);
+  if (!result) return res.json({ status: "pending", ts: Date.now() });
+  res.json({ ...result, ts: Date.now() });
 });
 
 // GET /api/vapi/assistant-config

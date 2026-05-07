@@ -10,14 +10,27 @@ const vapiRoute = require("./routes/vapi");
 const app = express();
 const PORT = process.env.PORT || 4000;
 
-app.use(cors({ origin: process.env.FRONTEND_URL || "*" }));
-app.use(express.json());
+// Allow ALL origins — needed for VAPI webhook to reach us
+app.use(cors({ origin: "*" }));
 
-const limiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 100 });
-app.use("/api", limiter);
+// Must parse JSON before routes
+app.use(express.json({ limit: "10mb" }));
+
+// Log every incoming request so we can see if VAPI is hitting us
+app.use((req, res, next) => {
+  console.log(`${new Date().toISOString()} ${req.method} ${req.path} from ${req.headers["x-forwarded-for"] || req.ip}`);
+  next();
+});
+
+// Rate limit only non-webhook API routes
+const limiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 200 });
+app.use("/api/evaluate", limiter);
 
 app.use("/api/evaluate", evaluateRoute);
 app.use("/api/vapi", vapiRoute);
+
+// Health check
+app.get("/health", (req, res) => res.json({ status: "ok", time: new Date().toISOString() }));
 
 // Serve frontend in production
 if (process.env.NODE_ENV === "production") {
@@ -27,4 +40,7 @@ if (process.env.NODE_ENV === "production") {
   });
 }
 
-app.listen(PORT, () => console.log(`Mr. Pool Eval server running on port ${PORT}`));
+app.listen(PORT, "0.0.0.0", () => {
+  console.log(`Mr. Pool Eval server running on port ${PORT}`);
+  console.log(`Anthropic key: ${process.env.ANTHROPIC_API_KEY ? "SET" : "NOT SET"}`);
+});
